@@ -1,0 +1,122 @@
+services:
+
+  traefik:
+    image: traefik:v2.8
+    container_name: traefik
+    restart: unless-stopped 
+    env_file: ./.env
+    command:
+      - "--api=true"
+      - "--api.dashboard=true"
+      - "--api.debug=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
+    labels: 
+      - "traefik.enable=true"
+      - "traefik.http.middlewares.test-auth.forwardauth.address=https://${LOCAL_IP}/auth/realms/ceiamin/protocol/openid-connect/auth"
+      - "traefik.http.middlewares.test-auth.forwardauth.tls.cert=/etc/traefik/cert.crt"
+      - "traefik.http.middlewares.test-auth.forwardauth.tls.key=/etc/traefik/cert.key" 
+      - "traefik.http.middlewares.test-auth.forwardauth.trustForwardHeader=true"
+      - "traefik.http.middlewares.testheader.headers.accesscontrolallowmethods=GET,OPTIONS,PUT,POST"
+      - "traefik.http.routers.traefik.rule=PathPrefix(`/api`) || PathPrefix(`/dashboard`)"
+      - "traefik.http.routers.traefik.entrypoints=web"
+      - "traefik.http.routers.traefik.entrypoints=websecure"
+      - "traefik.http.routers.traefik.tls=true"
+      - "traefik.http.routers.traefik.service=api@internal"
+      - "traefik.http.routers.traefik.middlewares=auth"      
+      - "traefik.http.middlewares.auth.basicauth.users=ceia:$$apr1$$TeUNFdI9$$nhR4SOwvaXxX3Ip9xxqyc/"
+      # https://doc.traefik.io/traefik/middlewares/http/basicauth/
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - $PWD/selfsigned.crt:/etc/traefik/cert.crt
+      - $PWD/selfsigned.key:/etc/traefik/cert.key
+    networks:
+      - default
+
+  vue:
+    container_name: vue
+    hostname: vue
+    image: vue
+    ports:
+      - "8065:80"
+    restart: unless-stopped
+    env_file: ./.env
+    build:
+        context: ./vue
+        dockerfile: Dockerfile
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.vue.rule=Host(`${LOCAL_IP}`)"
+      - "traefik.http.routers.vue.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.vue.entrypoints=web"
+      - "traefik.http.routers.vue.entrypoints=websecure"
+      - "traefik.http.routers.vue.tls=true"
+    depends_on:
+      - mongo
+    networks:
+      - default
+
+  backend:
+    container_name: backend
+    hostname: backend
+    image: backend
+    ports:
+      - "8062:80" 
+    restart: unless-stopped
+    env_file: ./.env
+    build:
+        context: .
+        dockerfile: backend/backend.Dockerfile    
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=PathPrefix(`/backend`) || PathPrefix(`/docs`)"
+      - "traefik.http.routers.backend.entrypoints=web"
+      - "traefik.http.routers.backend.entrypoints=websecure"
+      - "traefik.http.routers.backend.tls=true"
+      - "traefik.http.middlewares.backend-stripprefix.stripprefix.prefixes=/backend"
+      - "traefik.http.routers.backend.middlewares=backend-stripprefix"
+    secrets:
+      - mongodb_root_password
+    networks:
+      - default
+
+  mongo:
+    container_name: mongo
+    image: mongo
+    hostname: mongo
+    ports:
+      - 27019:27017
+    restart: unless-stopped
+    env_file: ./.env    
+    volumes:
+      - shared_database:/data/db
+    secrets:
+      - mongodb_root_password
+    networks:
+      - default
+
+volumes:
+  shared_database:
+
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.16.57.0/24
+        # A subnet foi configurada para evitar conflito com as VPN existentes no Datacenter, conforme abaixo:
+        # 172.17.192.8/19 (VPN SP) 
+        # 172.17.224.8/19 (VPN SP)
+        # 172.27.248.8/28 (VPN RD) 
+        # 172.24.64.8/18    (VPN BSB)
+
+secrets:
+  mongodb_root_password:
+    file: mongodb_root_password.txt
